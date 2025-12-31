@@ -20,7 +20,12 @@
 ' ============================================================================
 ' REQUIREMENTS:
 '   - Reference: Microsoft ActiveX Data Objects 6.1 Library (or 2.8+)
+'       If you get an error like "User Defined Type not defined" on ADODB.Connection or the macro fails on opening the database with a provider error,
+'       Just check the "Microsoft ActiveX Data Objects" Library box in VBA Editor > Tools > References in the options.
 '   - Access Database Engine installed for ACE OLEDB 12.0 provider
+'       Same here, if the macro errors with something like "Provider cannot be found" / "not registered",
+'       double check that Access is installed properly.
+'   If the button works, don't worry about this.
 ' ============================================================================
 Option Explicit
 
