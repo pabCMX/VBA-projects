@@ -443,7 +443,7 @@ Private Sub ExtractCaseReview()
     '   - MMYYYY numeric (e.g., 062025)
     '   - An actual Excel date
     ' We normalize to a first day of month because Access date fields expect dates.
-    Dim sm As Variant: sm = srcCache(11, 20)
+    Dim sm As Variant: sm = srcCache(11, 20)                                ' B - SampleMonth
     Dim smStr As String
     If Not IsEmpty(sm) And Len(Trim(CStr(sm))) > 0 Then
         smStr = Trim(CStr(sm))
@@ -452,15 +452,15 @@ Private Sub ExtractCaseReview()
             Dim smParts() As String
             smParts = Split(smStr, "/")
             If UBound(smParts) >= 1 Then
-                drData(drwr, 2) = DateSerial(Val(smParts(1)), Val(smParts(0)), 1)  ' B - SampleMonth
+                drData(drwr, 2) = DateSerial(Val(smParts(1)), Val(smParts(0)), 1)  
             End If
         ElseIf IsDate(sm) Then
             ' Already a date value
-            drData(drwr, 2) = DateSerial(Year(sm), Month(sm), 1)  ' B - SampleMonth
+            drData(drwr, 2) = DateSerial(Year(sm), Month(sm), 1)  
         ElseIf IsNumeric(sm) And Len(smStr) >= 6 Then
             ' Format: MMYYYY numeric
             smStr = Format(sm, "000000")
-            drData(drwr, 2) = DateSerial(Val(Right(smStr, 4)), Val(Left(smStr, 2)), 1)  ' B - SampleMonth
+            drData(drwr, 2) = DateSerial(Val(Right(smStr, 4)), Val(Left(smStr, 2)), 1)  
         End If
     End If
     
