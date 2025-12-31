@@ -235,34 +235,56 @@ Sub Find_Write_Database_Files()
         ' ---------------------------------------------------------------------
         ' D. Build path and find workbook
         ' ---------------------------------------------------------------------
-        ' We use the Dir() function to find the review workbook. It is built into VBA, fast, and avoids extra dependencies, like the custom class module used in the original version.
+        ' We use the Dir() function to find the case folder and workbook. It is built into VBA, fast, and avoids extra dependencies, like the custom class module used in the original version.
         ' NOTE: This assumes the network folder structure is correct and the case folder exists. If the folder structure changes, this will need to be updated.
         '
-        ' MA Positive uses a different file naming convention than TANF:
-        ' File pattern: "Review Number {ReviewNum} Month {YYYYMM} Examiner*.xls*"
-        ' Unlike TANF, MA Positive files are not in case folders - they're directly in the program folder (or month subfolder).
-        ' The path structure may or may not include a month subfolder, so we try both.
+        ' Folder structure: {program}\[FFY archive]\Review Month {MonthName} {YYYY}\{case folder}\review.xlsm
+        ' MA reviews are long-running, so the monthly folder may have been archived to "FFY 20XX - [exnumstr]"
+        ' before we run the edit check. We try both active and archived locations.
         
-        ' Try with month subfolder first (like TANF structure)
+        Dim ffyYear As Long
+        Dim mNum As Long
+        Dim CaseFolderName As String
+        Dim CaseFolderPath As String
+        
+        mNum = Val(Right(monthstr, 2))
+        ' FFY runs Oct-Sep: Oct-Dec = next year's FFY, Jan-Sep = current year's FFY
+        If mNum >= 10 Then
+            ffyYear = Val(yStr) + 1
+        Else
+            ffyYear = Val(yStr)
+        End If
+        
+        FileNameFound = ""
+        CaseFolderName = ""
+        
+        ' Try active location first (no FFY archive folder)
         BasePath = pathdir & exname & " - " & exnumstr & "\" & program & "\" & _
                    "Review Month " & mName & " " & yStr & "\"
         
-        FileNameFound = ""
         If Dir(BasePath, vbDirectory) <> "" Then
-            FileNameFound = Dir(BasePath & "Review Number " & reviewtxt & " Month " & monthstr & " Examiner*.xls*")
+            CaseFolderName = Dir(BasePath & reviewtxt & " - *", vbDirectory)
         End If
         
-        ' If not found, try without month subfolder (flat structure)
-        If FileNameFound = "" Then
-            BasePath = pathdir & exname & " - " & exnumstr & "\" & program & "\"
+        ' If not found, try FFY archive folder
+        If CaseFolderName = "" Then
+            BasePath = pathdir & exname & " - " & exnumstr & "\" & program & "\" & _
+                       "FFY " & ffyYear & " - " & exnumstr & "\" & _
+                       "Review Month " & mName & " " & yStr & "\"
             If Dir(BasePath, vbDirectory) <> "" Then
-                FileNameFound = Dir(BasePath & "Review Number " & reviewtxt & " Month " & monthstr & " Examiner*.xls*")
+                CaseFolderName = Dir(BasePath & reviewtxt & " - *", vbDirectory)
             End If
         End If
         
+        If CaseFolderName = "" Then GoTo NextIteration
+        If (GetAttr(BasePath & CaseFolderName) And vbDirectory) <> vbDirectory Then GoTo NextIteration
+        
+        CaseFolderPath = BasePath & CaseFolderName & "\"
+        FileNameFound = Dir(CaseFolderPath & "Review Number " & reviewtxt & " Month " & monthstr & " Examiner*.xls*")
+        
         If FileNameFound = "" Then GoTo NextIteration
         
-        FinalFilePath = BasePath & FileNameFound
+        FinalFilePath = CaseFolderPath & FileNameFound
         
         ' ---------------------------------------------------------------------
         ' E. Open and process workbook

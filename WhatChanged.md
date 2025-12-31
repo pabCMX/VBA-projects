@@ -511,7 +511,13 @@ The source cache range is `A1:AQ112` to cover all used rows:
 
 - **Initial Eligibility Check:** Error Findings are only extracted if `S16 (Init Elig) <> 1`
 - **File Search:** Searches for files matching `Review Number {num} Month {YYYYMM} Examiner*.xls*`
-- **Path Structure:** Tries month subfolder first, then flat structure
+- **Folder Structure:** Same as TANF - `{program}\[FFY archive]\Review Month {Month} {Year}\{case folder}\review.xlsm`
+- **FFY Archive Search:** MA reviews are long-running, so monthly folders may be archived before edit check runs. The macro searches two locations:
+  1. Active: `...\MA Positive\Review Month January 2024\{case folder}\`
+  2. Archived: `...\MA Positive\FFY 2024 - 5\Review Month January 2024\{case folder}\`
+- **FFY Calculation:** Federal Fiscal Year runs October→September, so:
+  - October-December sample months → FFY = year + 1
+  - January-September sample months → FFY = year
 
 ---
 
@@ -561,6 +567,13 @@ The source cache range is `A1:AF60` to cover all used rows:
 - **Case Number:** Strips leading "A" from case numbers if present
 - **Blank Database Location:** Uses a different network path than TANF/MA Positive
 - **Single Table:** Only one `TransferTableToAccess` call needed
+- **Folder Structure:** Same as TANF - `{program}\[FFY archive]\Review Month {Month} {Year}\{case folder}\review.xlsm`
+- **FFY Archive Search:** MA reviews are long-running, so monthly folders may be archived before edit check runs. The macro searches two locations:
+  1. Active: `...\MA Negative\Review Month January 2024\{case folder}\`
+  2. Archived: `...\MA Negative\FFY 2024 - 5\Review Month January 2024\{case folder}\`
+- **FFY Calculation:** Federal Fiscal Year runs October→September, so:
+  - October-December sample months → FFY = year + 1
+  - January-September sample months → FFY = year
 
 ---
 
