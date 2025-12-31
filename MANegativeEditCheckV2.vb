@@ -437,12 +437,31 @@ Private Sub ExtractCaseReview()
     
     drData(drwr, 1) = srcCache(15, 12)                                      ' A - ReviewNo (L15)
     
-    ' Sample Month (T11 = col 20) - parse MMYYYY format to date
-    ' The template stores sample month as numeric text; we normalize to a first day of month because Access date fields expect dates, not strings.
+    ' Sample Month (T11 = col 20) - parse to first day of month
+    ' The template may store sample month as:
+    '   - "MM/YYYY" text (e.g., "06/2025")
+    '   - MMYYYY numeric (e.g., 062025)
+    '   - An actual Excel date
+    ' We normalize to a first day of month because Access date fields expect dates.
     Dim sm As Variant: sm = srcCache(11, 20)
-    If IsNumeric(sm) And Len(CStr(sm)) >= 6 Then
-        Dim smStr As String: smStr = Format(sm, "000000")
-        drData(drwr, 2) = DateSerial(Val(Right(smStr, 4)), Val(Left(smStr, 2)), 1)  ' B - SampleMonth
+    Dim smStr As String
+    If Not IsEmpty(sm) And Len(Trim(CStr(sm))) > 0 Then
+        smStr = Trim(CStr(sm))
+        If InStr(smStr, "/") > 0 Then
+            ' Format: "MM/YYYY" - split by slash
+            Dim smParts() As String
+            smParts = Split(smStr, "/")
+            If UBound(smParts) >= 1 Then
+                drData(drwr, 2) = DateSerial(Val(smParts(1)), Val(smParts(0)), 1)  ' B - SampleMonth
+            End If
+        ElseIf IsDate(sm) Then
+            ' Already a date value
+            drData(drwr, 2) = DateSerial(Year(sm), Month(sm), 1)  ' B - SampleMonth
+        ElseIf IsNumeric(sm) And Len(smStr) >= 6 Then
+            ' Format: MMYYYY numeric
+            smStr = Format(sm, "000000")
+            drData(drwr, 2) = DateSerial(Val(Right(smStr, 4)), Val(Left(smStr, 2)), 1)  ' B - SampleMonth
+        End If
     End If
     
     drData(drwr, 3) = CStr(srcCache(11, 28)) & CStr(srcCache(11, 29))       ' C - ReviewerNo (AB11 & AC11)
