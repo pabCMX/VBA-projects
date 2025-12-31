@@ -1,6 +1,23 @@
 ' ============================================================================
 ' TANF Edit Check V2 - Fully Optimized Version
 ' ============================================================================
+' This macro does the following:
+'   - Takes a list of review numbers (and their sample months + examiner numbers) from the
+'     currently active "control" worksheet.
+'   - Locates each examiner's review workbook on the network drive using a predictable
+'     folder structure.
+'   - Opens each review workbook READ-ONLY, pulls a fixed set of values from a known
+'     template layout, and stores them into 5 output tables.
+'   - Writes those 5 tables into a temporary Excel template, then transfers them into a
+'     new Access database (.mdb) in ONE transaction (all-or-nothing).
+'
+' The main speed trick is to read big blocks *once* into arrays, work in memory, then write big blocks *once* at the end.
+'
+' Key points:
+'   - Batched Input/Output: `Range(...).Value` into Variant arrays is thousands of times faster than reading/writing cells one at a time.
+'   - Template layout indexing: Values like `srcCache(10, 35)` mean "Row 10, Column 35" of the cached template range. Column numbers are A=1, B=2, ... AQ=43.
+'   - For incomplete/dropped cases (Disposition Code <> 1), we only write the Review Summary and skip the detail tables to match the old behavior.
+' ============================================================================
 ' REQUIREMENTS:
 '   - Reference: Microsoft ActiveX Data Objects 6.1 Library (or 2.8+)
 '   - Access Database Engine installed for ACE OLEDB 12.0 provider
@@ -26,8 +43,11 @@ Private Const EF_COLS As Long = 12
 
 ' ==========================================================================
 ' SOURCE TEMPLATE LAYOUT CONSTANTS
-' Update these if the source workbook template structure changes
+
 ' ==========================================================================
+' We read a single rectangle (`SRC_CACHE_RANGE`) into memory, then use row/column indexes into that array.
+' If the template changes, these references must be updated. Check here first if the macro breaks after an update.
+
 ' Max rows per case for child tables (used for array pre-allocation)
 Private Const MAX_PERSONS_PER_CASE As Long = 8    ' Rows 30-44 step 2 = 8 persons max
 Private Const MAX_INCOME_PER_CASE As Long = 16    ' 4 rows × 4 income types = 16 max
@@ -41,17 +61,18 @@ Private Const SRC_CACHE_RANGE As String = "A1:AQ85"
 Private srcCache As Variant
 Private revidval As Long
 
-Sub Find_Write_Database_Files_V2()
+Sub Find_Write_Database_Files()
     On Error GoTo ErrorHandler
     
     ' ========================================================================
     ' 1. PERFORMANCE OPTIMIZATION - Disable all Excel overhead
     ' ========================================================================
     With Application
-        .ScreenUpdating = False
-        .DisplayStatusBar = True
-        .EnableEvents = False
-        .Calculation = xlCalculationManual
+        .ScreenUpdating = False ' avoid repainting the Excel UI after each operation
+        .DisplayStatusBar = True ' we still show a status bar to the user for feedback.
+        .EnableEvents = False ' prevent workbook/worksheet event macros from firing mid-run
+        .Calculation = xlCalculationManual ' prevent formula recalculation after each write (we do very few writes, but this is still a safe default for most runs)
+        ' we restore these settings on exit (see CleanExit) so Excel doesn't "feel broken" to the next person using it.
     End With
     
     ' Variable declarations
@@ -105,19 +126,22 @@ Sub Find_Write_Database_Files_V2()
     Next i
     
     If DLetter = "" Then
-        Err.Raise 9999, "Find_Write_Database_Files_V2", _
+        Err.Raise 9999, "Find_Write_Database_Files", _
             "Network Drive to Examiner Files NOT found." & vbCrLf & "Contact Valerie or Wes."
     End If
     
     pathdir = DLetter & "Schedules by Examiner Number\"
     If Dir(pathdir, vbDirectory) = "" Then
-        Err.Raise 9999, "Find_Write_Database_Files_V2", _
+        Err.Raise 9999, "Find_Write_Database_Files", _
             "Examiner Directory not found: " & pathdir
     End If
     
     ' ========================================================================
     ' 3. LOAD ALL INPUT DATA INTO MEMORY (Single read operations)
     ' ========================================================================
+    ' Accessing `Cells(i, j)` in a loop is slow because every call goes through Excel's COM interface. Reading the whole block once is fast, then indexing the array is fast.
+    ' Another small-but-important improvement vs the original: we use End(xlUp) from the bottom of the sheet.
+    ' End(xlDown) can stop early if there are blanks, which makes the macro "randomly" skip cases.
     maxrow = thissht.Range("E" & thissht.Rows.Count).End(xlUp).Row
     maxrowex = thissht.Range("L" & thissht.Rows.Count).End(xlUp).Row
     
@@ -129,6 +153,9 @@ Sub Find_Write_Database_Files_V2()
     ' ========================================================================
     ' 4. PRE-ALLOCATE OUTPUT ARRAYS (Avoids incremental resizing)
     ' ========================================================================
+    ' Growing arrays inside loops (ReDim Preserve) is extremely expensive. 
+    ' Instead, we allocate "big enough" arrays once, fill them, then trim to the actual used size right before writing them to the output sheets (see TrimArray()).
+    ' The MAX_* constants control how much room we reserve for detail tables per case.
     Dim maxCases As Long
     maxCases = maxrow - 1  ' Estimate max records
     
@@ -145,17 +172,27 @@ Sub Find_Write_Database_Files_V2()
     ' ========================================================================
     ' 5. MAIN PROCESSING LOOP
     ' ========================================================================
+    ' General flow per row:
+    '   Read review + examiner info from the input arrays
+    '   Build the expected folder path for that examiner/program/month
+    '   Find the specific case folder and review workbook with `Dir()`
+    '   Open workbook read-only, cache its data range into `srcCache`
+    '   Extract data into the 5 output arrays
+    '   Close workbook and continue
+    '
+    ' NOTE ABOUT `GoTo NextIteration`:
+    '   - This macro processes many rows. If any row is invalid/incomplete (missing examiner,
+    '     missing workbook, invalid month), we skip it instead of stopping the entire run.
     For i = 2 To maxrow
-        ' Update status every 10 records (reduces DoEvents overhead)
-        If i Mod 10 = 0 Or i = maxrow Then
-            Application.StatusBar = "Processing " & (i - 1) & "/" & (maxrow - 1) & _
-                " (" & Format((i - 1) / (maxrow - 1), "0%") & ")"
-            DoEvents
-        End If
+        ' Update status every record
+        Application.StatusBar = "Processing " & (i - 1) & "/" & (maxrow - 1) & _
+            " (" & Format((i - 1) / (maxrow - 1), "0%") & ")"
+        DoEvents
         
         ' ---------------------------------------------------------------------
         ' A. Parse and validate review number
         ' ---------------------------------------------------------------------
+        ' Strip the leading zero from the review number
         reviewtxt = Trim(CStr(vInput(i, 1)))
         If Left(reviewtxt, 1) = "0" Then reviewtxt = Mid(reviewtxt, 2)
         
@@ -166,6 +203,7 @@ Sub Find_Write_Database_Files_V2()
         ' ---------------------------------------------------------------------
         ' B. Find examiner name (array lookup - no Excel calls)
         ' ---------------------------------------------------------------------
+        ' A simple in-memory scan of the examiner array is fast and predictable. VLOOKUP would add more Excel calls (slow) and can be brittle if the range moves or changes.
         exname = ""
         currentExNum = Trim(CStr(vInput(i, 3)))
         
@@ -179,12 +217,14 @@ Sub Find_Write_Database_Files_V2()
         If exname = "" Then GoTo NextIteration
         
         ' Format examiner number (remove leading zero)
+        ' The folder naming convention uses "Name - N" where N is 1-2 digits without a leading 0. Input may contain "01" due to excel auto formatting but folder is "... - 1".
         exnumstr = Format(currentExNum, "00")
         If Left(exnumstr, 1) = "0" Then exnumstr = Right(exnumstr, 1)
         
         ' ---------------------------------------------------------------------
         ' C. Parse sample month
         ' ---------------------------------------------------------------------
+        ' Expected: YYYYMM (6 digits). We use this to build "Review Month {MonthName} {YYYY}" which matches the network folder structure.
         monthstr = Trim(CStr(vInput(i, 2)))
         If Len(monthstr) < 6 Then GoTo NextIteration
         
@@ -194,6 +234,11 @@ Sub Find_Write_Database_Files_V2()
         ' ---------------------------------------------------------------------
         ' D. Build path and find workbook
         ' ---------------------------------------------------------------------
+        ' We use the Dir() function to find the case folder and workbook. It is built into VBA, fast, and avoids extra dependencies, like the custom class module used in the original version.
+        ' NOTE: This assumes the network folder structure is correct and the case folder exists. If the folder structure changes, this will need to be updated.
+
+        ' The base path is {Schedules by Examiner Number}\{Examiner Name} - {Examiner #}\TANF\ Review Month {MonthName} {YYYY}\
+        ' Then we expect a case folder starting with "{ReviewNumber} - " and inside it a file named "Review Number {ReviewNumber}*.xls*".
         BasePath = pathdir & exname & " - " & exnumstr & "\" & program & "\" & _
                    "Review Month " & mName & " " & yStr & "\"
         
@@ -213,6 +258,7 @@ Sub Find_Write_Database_Files_V2()
         ' ---------------------------------------------------------------------
         ' E. Open and process workbook
         ' ---------------------------------------------------------------------
+        'Review workbooks contain external links or prompts. We want a non-interactive, predictable run. This also prevents accidental edits.
         Set inWB = Workbooks.Open(Filename:=FinalFilePath, UpdateLinks:=0, ReadOnly:=True)
         
         ' Try to get the review sheet
@@ -228,16 +274,24 @@ Sub Find_Write_Database_Files_V2()
         On Error GoTo ErrorHandler
         
         ' ---------------------------------------------------------------------
-        ' F. BATCH READ: Load all source data into cache array (single read)
+        ' F. BATCH READ: Load all source data into cache array
         ' ---------------------------------------------------------------------
+        '   - This is the ONE Excel read we do per case. Everything else reads from `srcCache`.
+        '   - `SRC_CACHE_RANGE` covers every cell we reference in the rest of the extraction logic.
+        '   - Reminder: `srcCache(r, c)` is 1-based and uses A=1, B=2, ... AQ=43 for columns.
         srcCache = inWS.Range(SRC_CACHE_RANGE).Value
         
+        ' Disposition Code controls whether we load the "detail" tables or not.
+        ' Keeping this rule matches the old macro (and avoids producing partial detail rows for dropped cases).
         disp_code = srcCache(10, 35)  ' AI10 = Row 10, Col 35
         revidval = i - 1
         
         ' ---------------------------------------------------------------------
         ' G. Extract data to output arrays
         ' ---------------------------------------------------------------------
+        ' The extraction logic is split into subroutines to keep the main loop readable and to centralize the "template cell mapping" logic.
+        ' Each subroutine writes to a pre-allocated array and increments its own row counter, so we don't have to worry about overwriting data.
+        ' This is from the original version, with a tweak to check disposition code before calling the subroutines.
         Call ExtractRevSum(inWB)
         
         If disp_code = 1 Then
@@ -255,8 +309,11 @@ NextIteration:
     Next i
     
     ' ========================================================================
-    ' 6. WRITE OUTPUT ARRAYS TO EXCEL (Single write per table)
+    ' 6. WRITE OUTPUT ARRAYS TO EXCEL
     ' ========================================================================
+    ' Excel writes are expensive. Writing 5 big blocks at the end is much faster than writing individual cells as we process each case.
+    ' We write starting at row 2 because row 1 contains the headers in the template.
+    ' NOTE: We call TrimArray(...) so we only write the populated rows (and not all the extra pre-allocated blank rows).
     Application.StatusBar = "Writing to Excel template..."
     DoEvents
     
@@ -298,6 +355,8 @@ NextIteration:
     ' ========================================================================
     ' 7. DATABASE TRANSFER WITH TRANSACTION
     ' ========================================================================
+    ' We use a transaction to write the data to the Access database. This is more efficient than writing one row at a time.
+    ' If any row fails, we roll back everything so the output database is not partially populated, saving us from deleting the partial database when starting over.
     Application.StatusBar = "Transferring to Access database..."
     DoEvents
     
@@ -314,7 +373,7 @@ NextIteration:
     ' Open connection with transaction
     Set cnt = New ADODB.Connection
     cnt.Open "Provider=Microsoft.Ace.OLEDB.12.0;Data Source=" & databasename & ";"
-    cnt.BeginTrans  ' Start transaction for batch performance
+    cnt.BeginTrans  ' One big transaction = faster + all-or-nothing if something goes wrong
     
     On Error GoTo DBError
     
@@ -357,6 +416,7 @@ CleanExit:
 
 DBError:
     ' Rollback ALL changes - no partial data
+    ' This is intentional: partial databases unncessary given we get the intermediate excel file if there is an error.
     cnt.RollbackTrans
     MsgBox "DATABASE WRITE FAILED - NO DATA SAVED" & vbCrLf & vbCrLf & _
            "Error: " & Err.Description & vbCrLf & _
@@ -377,10 +437,14 @@ ErrorHandler:
 End Sub
 
 ' ============================================================================
-' DATA EXTRACTION SUBROUTINES (All use srcCache array - no Excel calls)
+' DATA EXTRACTION SUBROUTINES
 ' ============================================================================
+' All use srcCache array - no Excel calls
 
 Private Sub ExtractRevSum(inWB As Workbook)
+' PURPOSE:
+'   - Writes one row to the Review Summary table for the current case.
+'   - Most fields come from `srcCache`, but Run Date lives on another sheet ("TANF Workbook"), so we need the workbook object to read it.
     rswr = rswr + 1
     
     rsData(rswr, 1) = revidval                          ' ReviewID
@@ -390,6 +454,7 @@ Private Sub ExtractRevSum(inWB As Workbook)
     rsData(rswr, 5) = srcCache(10, 19)                  ' S10 - Grant Group
     
     ' Sample Month (AB10 = col 28) - parse MMYYYY format
+    ' The template stores sample month as numeric text; we normalize to a first day of month because Access date fields expect dates, not strings.
     Dim sm As Variant: sm = srcCache(10, 28)
     If IsNumeric(sm) And Len(CStr(sm)) >= 6 Then
         Dim smStr As String: smStr = Format(sm, "000000")
@@ -399,6 +464,8 @@ Private Sub ExtractRevSum(inWB As Workbook)
     ' Error Amount (only for disposition = 1)
     If srcCache(10, 35) = 1 Then  ' AI10
         If IsNumeric(srcCache(10, 41)) Then  ' AO10
+            ' Excel/VBA floating point values can be represented slightly below the expected value (ex: 10.5 stored as 10.499999999). Adding a tiny 0.001 or "epsilon" avoids rounding down due to binary floating point quirks.
+            ' Just for safety, and matching the old behavior.
             rsData(rswr, 7) = Round(Val(srcCache(10, 41)) + 0.001, 0)
         End If
     End If
@@ -418,10 +485,14 @@ Private Sub ExtractRevSum(inWB As Workbook)
     On Error GoTo 0
     
     rsData(rswr, 13) = CStr(srcCache(3, 41)) & CStr(srcCache(3, 42))  ' AO3 & AP3 - Examiner
+    ' Intentional: Column 14 in Review_Summary_dtl is intentionally not set here (template column is unused/reserved?).
     rsData(rswr, 15) = CleanValue(srcCache(85, 28), "B")              ' AB85 - Renewal Type
 End Sub
 
 Private Sub ExtractQCInfo()
+' PURPOSE:
+'   - Writes one row to the QC Case Info table for the current case.
+'   - All fields are direct template mappings. If a column moves on the template, adjust the `srcCache(row, col)` indexes here.
     qcwr = qcwr + 1
     
     qcData(qcwr, 1) = revidval
@@ -450,6 +521,9 @@ Private Sub ExtractQCInfo()
 End Sub
 
 Private Sub ExtractPLInfo()
+' PURPOSE:
+'   - Writes 0..N rows to the Person Level table for the current case.
+'   - The template stores each person on every other row (blank rows in between for spacing), so we step by 2 and stop when Person Number (column A) is blank.
     Dim j As Long, ln As Long
     ln = 0
     
@@ -481,6 +555,10 @@ Private Sub ExtractPLInfo()
 End Sub
 
 Private Sub ExtractHHInc()
+' PURPOSE:
+'   - Writes 0..N rows to the Household Income table for the current case.
+'   - The template stores each person on every other row (blank rows in between for spacing), so we step by 2 and stop when Person Number (column C) is blank.
+'   - Across the row, income types repeat in blocks; `k = 7 To 37 Step 10` walks those blocks.
     Dim j As Long, k As Long
     
     For j = 50 To 56 Step 2
@@ -492,6 +570,7 @@ Private Sub ExtractHHInc()
             hiwr = hiwr + 1
             hiData(hiwr, 1) = revidval
             hiData(hiwr, 2) = srcCache(j, k + 4)  ' Amount of income
+            ' Intentional: Column 3 in Household_Income_dtl is unused in the template (kept for compatibility's sake).
             hiData(hiwr, 4) = srcCache(j, 3)       ' C - Person number
             hiData(hiwr, 5) = srcCache(j, k)       ' Type of income
         Next k
@@ -499,6 +578,9 @@ Private Sub ExtractHHInc()
 End Sub
 
 Private Sub ExtractErrFind()
+' PURPOSE:
+'   - Writes 0..N rows to the Error Findings table for the current case.
+'   - We store occurrence dates as "first day of the month" so the database can group/filter by month consistently, regardless of the actual day entered on the form.
     Dim j As Long, ln As Long
     ln = 0
     
@@ -534,7 +616,10 @@ End Sub
 ' ============================================================================
 
 Private Function CleanValue(v As Variant, defaultVal As String) As String
-    ' Returns cleaned string or default if empty/invalid
+' PURPOSE:
+'   - The template sometimes contains blanks, errors (#N/A), or placeholders like "-" for codes that are required by the database schema. This function cleans them up.
+' RETURNS:
+'   - A safe string: either the cleaned value, or the provided default.
     If IsError(v) Then
         CleanValue = defaultVal
     ElseIf IsEmpty(v) Then
@@ -549,7 +634,9 @@ Private Function CleanValue(v As Variant, defaultVal As String) As String
 End Function
 
 Private Function TrimArray(arr As Variant, rowCount As Long, colCount As Long) As Variant
-    ' Returns a properly sized copy of the array (removes unused pre-allocated rows)
+' PURPOSE:
+'   - We pre-allocate arrays larger than we need for speed. This function copies just the populated portion into a new array so the Excel `.Resize(...).Value = ...` write doesn't include any blank rows.
+'   - `ReDim Preserve` on a multi-dimensional array is slow; copying is clear and fast enough given we only do it once per table at the end.
     Dim result() As Variant
     Dim r As Long, c As Long
     
@@ -570,7 +657,11 @@ End Function
 
 Private Sub TransferTableToAccess(cnt As ADODB.Connection, ws As Worksheet, _
                                    tableName As String, maxRows As Long)
-    ' Transfers worksheet data to Access table using optimized recordset operations
+' PURPOSE:
+'   - Bulk-loads one worksheet table into the matching Access table. This is the biggest change to the database logic from the original version.
+'   - Using Excel as an ODBC/ISAM data source is slow and error-prone (as we've seen). Recordset inserts keep the data flow in memory and allow us to use a transaction.
+'   - This sub assumes row 1 contains headers that correspond to Access field names. We build a column→field mapping once, then loop the data rows and set values by index.
+'   - We intentionally do NOT suppress errors during writes. If a value doesn't fit the database schema, we want to stop and rollback (so we don't hide a half-bad database) and report the error.
     If maxRows = 0 Then Exit Sub
     
     Dim rs As ADODB.Recordset
@@ -588,10 +679,13 @@ Private Sub TransferTableToAccess(cnt As ADODB.Connection, ws As Worksheet, _
     
     ' Open recordset
     Set rs = New ADODB.Recordset
-    rs.CursorLocation = adUseClient
+    rs.CursorLocation = adUseClient ' client-side cursor is usually faster for batch inserts like this
     rs.Open tableName, cnt, adOpenKeyset, adLockOptimistic, adCmdTableDirect
+    ' adCmdTableDirect tells ADO we're opening a table, not running a SQL query (less overhead).
     
     ' Pre-calculate column-to-field mapping
+    ' FieldMap(c) stores the Access field index that matches worksheet column c.
+    ' If no match is found, FieldMap(c) stays -1 and we skip that worksheet column.
     ReDim FieldMap(1 To lastCol)
     For c = 1 To lastCol
         FieldMap(c) = -1  ' Default: no match
@@ -599,6 +693,7 @@ Private Sub TransferTableToAccess(cnt As ADODB.Connection, ws As Worksheet, _
         
         If hName <> "" Then
             ' Normalize header (replace spaces with underscores, lowercase)
+            ' Excel headers may contain spaces ("Run Date") but Access field names often use underscores ("run_date"). We can accept either by normalizing and comparing both forms.
             Dim normH As String
             normH = Replace(LCase(hName), " ", "_")
             
@@ -612,7 +707,8 @@ Private Sub TransferTableToAccess(cnt As ADODB.Connection, ws As Worksheet, _
         End If
     Next c
     
-    ' Batch insert rows - NO silent error suppression
+    ' Batch insert rows
+    ' Excel might contain empty variants or error values (ex: #VALUE!). Writing those directly can raise ADO type conversion errors. We treat them as "no value" and let Access defaults / null handling apply.
     Dim vValue As Variant
     For r = 1 To UBound(dataArr, 1)
         rs.AddNew
@@ -621,8 +717,8 @@ Private Sub TransferTableToAccess(cnt As ADODB.Connection, ws As Worksheet, _
                 vValue = dataArr(r, c)
                 If Not IsError(vValue) And Not IsEmpty(vValue) Then
                     If Len(CStr(vValue)) > 0 Then
-                        ' Let errors propagate - will trigger DBError handler
-                        ' which rolls back transaction and reports the issue
+                        ' Let errors propagate; this will trigger the DBError handler,
+                        ' which rolls back the transaction and reports the issue.
                         rs.Fields(FieldMap(c)).Value = vValue
                     End If
                 End If

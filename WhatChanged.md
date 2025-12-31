@@ -370,6 +370,18 @@ rsData(rswr, 8) = CleanValue(srcCache(10, 38), "B")
 
 ---
 
+### 11. Documentation / Maintainability Comments (New)
+
+**Change:** Added plain-English, “why we do this” comments throughout `EditCheckV2.vb`.
+
+**Why it matters:**
+- The optimization techniques in V2 (batch reads/writes, template caching, Access field mapping, and transaction handling) are not obvious to non-VBA specialists.
+- The new comments explain intent, assumptions, and what to update if the workbook template layout changes.
+
+**Behavior impact:** None (comments only).
+
+---
+
 ## Compatibility Notes
 
 ### Requirements for V2
