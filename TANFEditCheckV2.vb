@@ -458,12 +458,31 @@ Private Sub ExtractRevSum(inWB As Workbook)
     rsData(rswr, 4) = srcCache(10, 17)                  ' Q10 - Category
     rsData(rswr, 5) = srcCache(10, 19)                  ' S10 - Grant Group
     
-    ' Sample Month (AB10 = col 28) - parse MMYYYY format
-    ' The template stores sample month as numeric text; we normalize to a first day of month because Access date fields expect dates, not strings.
+    ' Sample Month (AB10 = col 28) - parse to first day of month
+    ' The template may store sample month as:
+    '   - "MM/YYYY" text (e.g., "06/2025")
+    '   - MMYYYY numeric (e.g., 062025)
+    '   - An actual Excel date
+    ' We normalize to a first day of month because Access date fields expect dates.
     Dim sm As Variant: sm = srcCache(10, 28)
-    If IsNumeric(sm) And Len(CStr(sm)) >= 6 Then
-        Dim smStr As String: smStr = Format(sm, "000000")
-        rsData(rswr, 6) = DateSerial(Val(Right(smStr, 4)), Val(Left(smStr, 2)), 1)
+    Dim smStr As String
+    If Not IsEmpty(sm) And Len(Trim(CStr(sm))) > 0 Then
+        smStr = Trim(CStr(sm))
+        If InStr(smStr, "/") > 0 Then
+            ' Format: "MM/YYYY" - split by slash
+            Dim smParts() As String
+            smParts = Split(smStr, "/")
+            If UBound(smParts) >= 1 Then
+                rsData(rswr, 6) = DateSerial(Val(smParts(1)), Val(smParts(0)), 1)
+            End If
+        ElseIf IsDate(sm) Then
+            ' Already a date value
+            rsData(rswr, 6) = DateSerial(Year(sm), Month(sm), 1)
+        ElseIf IsNumeric(sm) And Len(smStr) >= 6 Then
+            ' Format: MMYYYY numeric
+            smStr = Format(sm, "000000")
+            rsData(rswr, 6) = DateSerial(Val(Right(smStr, 4)), Val(Left(smStr, 2)), 1)
+        End If
     End If
     
     ' Error Amount (only for disposition = 1)
@@ -480,12 +499,28 @@ Private Sub ExtractRevSum(inWB As Workbook)
     rsData(rswr, 10) = srcCache(10, 21)                   ' U10 - CAO
     rsData(rswr, 11) = srcCache(10, 35)                   ' AI10 - Disposition Code
     
-    ' Run Date from TANF Workbook sheet
+    ' Run Date from TANF Workbook sheet (G33)
+    ' May be stored as date or text "MM/DD/YYYY"
     On Error Resume Next
     Dim twSheet As Worksheet
+    Dim runDateVal As Variant
     Set twSheet = inWB.Sheets("TANF Workbook")
     If Not twSheet Is Nothing Then
-        rsData(rswr, 12) = twSheet.Range("G33").Value
+        runDateVal = twSheet.Range("G33").Value
+        If Not IsEmpty(runDateVal) And Len(Trim(CStr(runDateVal))) > 0 Then
+            If IsDate(runDateVal) Then
+                ' Already a date or text that VBA recognizes as date
+                rsData(rswr, 12) = CDate(runDateVal)
+            Else
+                ' Try parsing as text "MM/DD/YYYY"
+                Dim rdStr As String: rdStr = Trim(CStr(runDateVal))
+                Dim rdParts() As String
+                rdParts = Split(rdStr, "/")
+                If UBound(rdParts) >= 2 Then
+                    rsData(rswr, 12) = DateSerial(Val(rdParts(2)), Val(rdParts(0)), Val(rdParts(1)))
+                End If
+            End If
+        End If
     End If
     On Error GoTo 0
     
