@@ -280,7 +280,7 @@ CleanExit:
 
 ### 8. Status Updates
 
-**Original:** Every iteration
+**Original:** Every iteration, no DoEvents
 ```vb
 For i = 2 To maxrow
     frac = 100 * (i - 2) / (maxrow - 1)
@@ -291,21 +291,19 @@ For i = 2 To maxrow
     ' No DoEvents
 ```
 
-**V2:** Throttled updates with DoEvents
+**V2:** Every iteration with DoEvents
 ```vb
 For i = 2 To maxrow
-    ' Only update every 10 records
-    If i Mod 10 = 0 Or i = maxrow Then
-        Application.StatusBar = "Processing " & (i - 1) & "/" & (maxrow - 1) & _
-            " (" & Format((i - 1) / (maxrow - 1), "0%") & ")"
-        DoEvents  ' Allow Excel to process messages
-    End If
+    ' Update status every record
+    Application.StatusBar = "Processing " & (i - 1) & "/" & (maxrow - 1) & _
+        " (" & Format((i - 1) / (maxrow - 1), "0%") & ")"
+    DoEvents  ' Allow Excel to process messages
 ```
 
 **Why It Matters:**
-- Status bar updates are expensive
-- `DoEvents` allows Excel to remain responsive
-- Throttling reduces overhead while maintaining user feedback
+- `DoEvents` allows Excel to remain responsive during long operations
+- Status bar provides real-time feedback on progress
+- Simplified format shows current count and percentage
 
 ---
 
@@ -413,7 +411,7 @@ rsData(rswr, 8) = CleanValue(srcCache(10, 38), "B")
 | Excel cell writes | ~3,000 | 5 (one per table) |
 | File search operations | 100 (via class) | 200 (native Dir) |
 | Database operations | 5 SQL executes | 1 transaction |
-| Status bar updates | 100 | 10 |
+| Status bar updates | 100 | 100 |
 
 ### Estimated Execution Time
 
@@ -439,23 +437,23 @@ errfind()                       ' 32 lines
 
 ### V2 Structure
 ```
-Find_Write_Database_Files_V2()  ' Main orchestration
+Find_Write_Database_Files()      ' 374 lines - Main orchestration
 ├── Input loading (array-based)
 ├── Main processing loop
-│   ├── ExtractRevSum()         ' Private, uses srcCache
-│   ├── ExtractQCInfo()         ' Private, uses srcCache
-│   ├── ExtractPLInfo()         ' Private, uses srcCache
-│   ├── ExtractHHInc()          ' Private, uses srcCache
-│   └── ExtractErrFind()        ' Private, uses srcCache
+│   ├── ExtractRevSum()         ' 47 lines - Private, uses srcCache
+│   ├── ExtractQCInfo()         ' 30 lines - Private, uses srcCache
+│   ├── ExtractPLInfo()         ' 33 lines - Private, uses srcCache
+│   ├── ExtractHHInc()          ' 22 lines - Private, uses srcCache
+│   └── ExtractErrFind()        ' 33 lines - Private, uses srcCache
 ├── Output writing (batch)
 ├── Database transfer
-│   └── TransferTableToAccess() ' Reusable for each table
+│   └── TransferTableToAccess() ' 75 lines - Reusable for each table
 ├── Error handling
 │   ├── DBError handler
 │   └── General ErrorHandler
 └── Helper Functions
-    ├── CleanValue()
-    └── TrimArray()
+    ├── CleanValue()            ' 17 lines
+    └── TrimArray()             ' 21 lines
 ```
 
 ---
@@ -482,5 +480,117 @@ Find_Write_Database_Files_V2()  ' Main orchestration
 
 ---
 
-*Document generated for TANF Edit Check V2 optimization project*
+## MA Positive Edit Check V2
+
+The same optimization patterns from TANF V2 were applied to create `MAPositiveEditCheckV2.vb`.
+
+### Key Differences from TANF V2
+
+| Aspect | TANF V2 | MA Positive V2 |
+|--------|---------|----------------|
+| Review Number Prefix | "1" | "2" |
+| Program Folder | "TANF" | "MA Positive" |
+| Output Tables | 5 | 5 (same structure) |
+| Template File | TANF_Template.xlsx | MA_Positive_Template.xlsx |
+| Blank Database | TANF_Blank.mdb | MA_Pos_Blank.mdb |
+| Run Date Sheet | "TANF Workbook" | "MA Workbook" or "MA Facesheet" |
+
+### Template Cell Mappings (MA Positive)
+
+The source cache range is `A1:AQ112` to cover all used rows:
+
+| Table | Key Rows | srcCache Range |
+|-------|----------|----------------|
+| Review Summary | 3, 10, 16, 21 | (3-21, 1-43) |
+| QC Case Info | 27, 32 | (27-32, 1-43) |
+| Person Level Info | 51-73 step 2 | (51-73, 1-43) |
+| Household Income | 78-84 step 2 | (78-84, 1-36) |
+| Error Findings | 96-112 step 2 | (96-112, 1-43) |
+
+### Special Logic
+
+- **Initial Eligibility Check:** Error Findings are only extracted if `S16 (Init Elig) <> 1`
+- **File Search:** Searches for files matching `Review Number {num} Month {YYYYMM} Examiner*.xls*`
+- **Path Structure:** Tries month subfolder first, then flat structure
+
+---
+
+## MA Negative Edit Check V2
+
+The same optimization patterns were applied to create `MANegativeEditCheckV2.vb`, but this is simpler since it only has one output table.
+
+### Key Differences from Other V2 Macros
+
+| Aspect | MA Negative V2 |
+|--------|----------------|
+| Review Number Prefix | "8" |
+| Program Folder | "MA Negative" |
+| Output Tables | 1 (CaseReview_dtl) |
+| Columns | 19 (A-S) |
+| Template File | None (headers created in code) |
+| Blank Database Path | `{DLetter}\HQ - Data Entry\Create FO Databases\FO Databases\MA_Neg_Blank.mdb` |
+
+### Template Cell Mappings (MA Negative)
+
+The source cache range is `A1:AF60` to cover all used rows:
+
+| Field | Cell | srcCache Index |
+|-------|------|----------------|
+| ReviewNo | L15 | (15, 12) |
+| SampleMonth | T11 | (11, 20) |
+| ReviewerNo | AB11:AC11 | (11, 28-29) |
+| StateCode | B15 | (15, 2) |
+| CountyCode | G15 | (15, 7) |
+| CaseNo | S15 | (15, 19) |
+| CaseCategoryCode | AB15 | (15, 28) |
+| ProgramStatus | B19 | (19, 2) |
+| GrantGroup | F19 | (19, 6) |
+| AgencyDecisionDate | J19 | (19, 10) |
+| AgencyActionDate | S19 | (19, 19) |
+| ReviewCategory | AB19 | (19, 28) |
+| ActionTypeCode | AF19 | (19, 32) |
+| HearingReqCode | C25 | (25, 3) |
+| ReasonForActionCode | Q25 | (25, 17) |
+| EligibilityRequirementCode | C40 | (40, 3) |
+| FieldInvestigationCode | C56 | (56, 3) |
+| DispositionCode | M56 | (56, 13) |
+| PostReviewStatusCode | Y56 | (56, 25) |
+
+### Special Logic
+
+- **Case Number:** Strips leading "A" from case numbers if present
+- **Blank Database Location:** Uses a different network path than TANF/MA Positive
+- **Single Table:** Only one `TransferTableToAccess` call needed
+
+---
+
+## Common V2 Patterns (All Programs)
+
+All three V2 macros share these optimizations:
+
+1. **`Option Explicit`** - Forces variable declarations
+2. **Performance Settings** - Disables ScreenUpdating, EnableEvents, sets Calculation to Manual
+3. **Batch Input Read** - `vInput = Range(...).Value` instead of cell-by-cell
+4. **Source Cache** - `srcCache = inWS.Range(SRC_CACHE_RANGE).Value` for one read per case
+5. **Pre-allocated Output Arrays** - Avoids ReDim Preserve overhead
+6. **Dir()-based File Search** - No custom class dependencies
+7. **TrimArray Helper** - Copies only populated rows for output
+8. **CleanValue Helper** - Handles blanks, errors, and "-" placeholders
+9. **TransferTableToAccess** - Recordset-based with field mapping
+10. **Transaction Wrapping** - BeginTrans/CommitTrans for atomic database writes
+11. **Comprehensive Error Handling** - ErrorHandler and DBError labels with cleanup
+
+---
+
+## Files Created
+
+| File | Description |
+|------|-------------|
+| `TANFEditCheckV2.vb` | Optimized TANF edit check (from original) |
+| `MAPositiveEditCheckV2.vb` | Optimized MA Positive edit check |
+| `MANegativeEditCheckV2.vb` | Optimized MA Negative edit check |
+
+---
+
+*Document updated to include MA Positive and MA Negative V2 refactoring*
 
